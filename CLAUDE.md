@@ -7,7 +7,7 @@
 
 Shared backend library for multi-tenant entity/organization management.
 
-**npm**: `@sudobility/entity_service` (public)
+**Package**: `@sudobility/entity_service` — published to **GitHub Packages** (`npm.pkg.github.com`), not the public npm registry. `.npmrc` scopes `@sudobility` to that registry; installs need a token with `read:packages`.
 
 ## Tech Stack
 
@@ -29,32 +29,34 @@ src/
 ├── helpers/
 │   ├── index.ts                    # Helper barrel exports
 │   ├── EntityHelper.ts             # Entity CRUD operations
-│   ├── EntityHelper.test.ts        # Entity helper tests
 │   ├── EntityMemberHelper.ts       # Member management
 │   ├── InvitationHelper.ts         # Invitation handling
-│   └── PermissionHelper.ts         # Permission checks
+│   ├── PermissionHelper.ts         # Permission checks
+│   ├── ApiKeyHelper.ts             # Entity API key CRUD + verifyKey
+│   └── *.test.ts                   # Vitest suites (EntityHelper, ApiKeyHelper)
 ├── middleware/
 │   ├── index.ts                    # Middleware barrel exports
-│   └── hono.ts                     # Entity context injection + helper factory
+│   └── hono.ts                     # Entity context + require-permission/role + createEntityHelpers
 ├── schema/
-│   └── entities.ts                 # All schema factories + default tables + init functions
+│   └── entities.ts                 # Schema factories (+ *Public variants), default tables, init SQL
 ├── migrations/
 │   ├── index.ts                    # Migration barrel exports
 │   └── 001_add_entities.ts         # Entity tables migration + user migration
 └── utils/
     ├── index.ts                    # Utils barrel exports
     ├── slug-generator.ts           # Slug generation, validation, invitation tokens
-    └── slug-generator.test.ts      # Slug generator tests
+    ├── api-key-generator.ts        # generateApiKey / hashApiKey (SHA-256) / validateKeyPrefix
+    └── *.test.ts                   # Vitest suites (slug-generator, api-key-generator)
 ```
 
 ## Commands
 
 ```bash
-bun run build        # Build ESM-only
-bun run verify       # All checks + build (use before commit)
-bun test             # Run tests
-bun run typecheck    # TypeScript check
-bun run lint         # Run ESLint
+bun run build        # Build ESM-only (tsc tsconfig.esm.json + fix-esm-imports.mjs)
+bun run verify       # typecheck -> lint -> build (use before commit; NO tests)
+bun run test:unit    # Run tests (Vitest). NOT `bun test` -- see gotchas
+bun run typecheck    # tsc --noEmit
+bun run lint         # ESLint
 bun run clean        # Remove dist/
 ```
 
@@ -83,77 +85,32 @@ bun run clean        # Remove dist/
 3. On user signup, pending invitations auto-accepted
 4. User becomes member of invited entities
 
-## Usage
+## Public API (entry points)
 
-### Setup Helpers
-```typescript
-import { createEntityHelpers } from '@sudobility/entity_service';
+All exported from the package root (`src/index.ts`). See README for usage examples.
 
-const helpers = createEntityHelpers({
-  db: drizzleDb,
-  entitiesTable: schema.entities,
-  membersTable: schema.entityMembers,
-  invitationsTable: schema.entityInvitations,
-  usersTable: schema.users,
-});
-```
+- **`createEntityHelpers(config)`** → `{ entity, members, invitations, permissions, apiKeys? }`.
+  `apiKeys` is present only when `config.apiKeysTable` (and `keyPrefix`) are supplied.
+- **Schema factories**: `create{Entities,EntityMembers,EntityInvitations,EntityApiKeys}Table(schema, indexPrefix)`
+  for a named `pgSchema`, plus `*Public(indexPrefix)` variants and ready-made default tables
+  (`entities`, `entityMembers`, ...). `initEntityTables` emits raw `CREATE TABLE` SQL.
+- **Middleware** (`./middleware/hono`): `createEntityContextMiddleware`,
+  `createRequirePermissionMiddleware`, `createRequireRoleMiddleware`.
+- **Utils**: slug/token generation + API-key generation/hashing.
+- **Types & permission constants** re-exported from `@sudobility/types`.
 
-### Entity Operations
-```typescript
-// Get or create personal entity (on user login)
-const personalEntity = await helpers.entity.getOrCreatePersonalEntity(userId, email);
-
-// Create organization
-const org = await helpers.entity.createOrganizationEntity(userId, {
-  displayName: 'My Organization',
-  entitySlug: 'my-org', // optional
-});
-
-// Get user's entities
-const entities = await helpers.entity.getUserEntities(userId);
-```
-
-### Hono Middleware
-```typescript
-import { createEntityContextMiddleware } from '@sudobility/entity_service';
-
-const entityContext = createEntityContextMiddleware(config, {
-  getUserId: (c) => c.get('userId'),
-});
-
-app.use('/api/v1/entities/:entitySlug/*', entityContext);
-
-app.get('/api/v1/entities/:entitySlug/projects', (c) => {
-  const { entity, userRole, permissions } = c.get('entityContext');
-  // Use entity context...
-});
-```
-
-## Database Schema
-
-Factory functions for creating tables in any PostgreSQL schema:
-
-```typescript
-import { createEntitiesTable, createEntityMembersTable } from '@sudobility/entity_service';
-import { pgSchema } from 'drizzle-orm/pg-core';
-
-const mySchema = pgSchema('my_app');
-
-export const entities = createEntitiesTable(mySchema, 'my_app');
-export const entityMembers = createEntityMembersTable(mySchema, 'my_app');
-```
-
-## Peer Dependencies
-
-Required in consuming app:
-- `drizzle-orm` - Database ORM
-- `hono` - Web framework (for middleware)
+Peer deps (installed by the consumer, never in `dependencies`): `drizzle-orm`, `hono`, `@sudobility/types`.
 
 ## Publishing
 
+Publishing is normally automatic: the `ci-cd.yml` workflow (reusable
+`johnqh/workflows` with `publish-target: github`) publishes to GitHub Packages
+on push to `main`/`develop`. Bump `version` in package.json first. A manual
+publish still targets GitHub Packages because of `.npmrc`:
+
 ```bash
-bun run verify       # All checks
-npm publish          # Publish to npm
+bun run verify       # typecheck + lint + build
+npm publish          # -> npm.pkg.github.com (NOT public npm)
 ```
 
 ## Architecture
@@ -167,20 +124,12 @@ sudojo_api (backend)
 
 ## Code Patterns
 
-### Error Handling
-- Invalid entity slug: Return 404
-- Permission denied: Return 403
-- Duplicate invitation: Return 409
-
-### Type Imports
-```typescript
-import type { Entity, EntityMember, EntityRole } from '@sudobility/entity_service';
-import { EntityRole, hasPermission } from '@sudobility/entity_service';
-```
+- Error conventions: invalid/unknown entity slug → 404; permission denied → 403; duplicate invitation → 409.
+- Types import as `type`; enums/helpers (`EntityRole`, `hasPermission`) import as values.
 
 ## Workspace Context
 
-This project is part of the **ShapeShyft** multi-project workspace at the parent directory. See `../CLAUDE.md` for the full architecture, dependency graph, and build order.
+This project is part of the **ShapeShyft** multi-project workspace. Its direct downstream consumer is `shapeshyft_api` (see below).
 
 ## Downstream Impact
 
@@ -190,7 +139,7 @@ This project is part of the **ShapeShyft** multi-project workspace at the parent
 
 After making changes:
 1. `bun run verify` in this project
-2. `npm publish`
+2. Bump `version` in package.json and push to `main` (CI publishes to GitHub Packages)
 3. In `shapeshyft_api`: `bun update @sudobility/entity_service` then rebuild
 
 Note: `entity_pages` does NOT depend on this package. It uses `@sudobility/entity_client` (a separate repo).
@@ -214,8 +163,8 @@ bun unlink @sudobility/entity_service && bun install
 ## Pre-Commit Checklist
 
 ```bash
-bun run verify    # Runs: typecheck -> lint -> build (does NOT include tests)
-bun test          # Run tests separately
+bun run verify     # Runs: typecheck -> lint -> build (does NOT include tests)
+bun run test:unit  # Run tests separately (Vitest)
 ```
 
 ## Gotchas
@@ -224,6 +173,9 @@ bun test          # Run tests separately
 - **Peer dependencies (drizzle-orm, hono) must be installed by consumers** -- do not add to `dependencies`.
 - **Personal entities use randomly generated slugs** (8-char alphanumeric via `generateEntitySlug()`). Slugs are not derived from userId.
 - **Role permissions are defined in `@sudobility/types`** and re-exported via `types/index.ts`. Changing them affects all consumers.
+- **Tests run on Vitest, not Bun's runner.** Use `bun run test:unit`; `bun test` loads Bun's native runner which does not execute the `vitest`-based suites correctly.
+- **Build needs the ESM-import fixup.** `scripts/fix-esm-imports.mjs` rewrites extensionless/relative specifiers to `.js` after `tsc`; `tsc` alone produces output Node's ESM loader rejects. `tsconfig.cjs.json` exists but is not used by any build script (ESM-only output).
+- **GitHub Packages, not npm.** Installing/publishing requires the `@sudobility` scope pointed at `npm.pkg.github.com` (via `.npmrc`) and a token with `read:packages` (consumers) / `write:packages` (publish).
 
 ## Git Workflow
 

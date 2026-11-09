@@ -4,9 +4,21 @@ Shared backend library for multi-tenant entity/organization management with Driz
 
 ## Installation
 
+Published to **GitHub Packages** (not the public npm registry). Consumers must
+point the `@sudobility` scope at the GitHub registry — this repo's `.npmrc` does:
+
+```
+@sudobility:registry=https://npm.pkg.github.com
+```
+
+Install with an authenticated token (a PAT with `read:packages`):
+
 ```bash
 bun add @sudobility/entity_service
 ```
+
+`drizzle-orm` and `hono` are peer dependencies and must be installed by the
+consuming app.
 
 ## Usage
 
@@ -76,6 +88,9 @@ const identity = await helpers.apiKeys!.verifyKey(incomingKey);
 | Export | Description |
 |--------|-------------|
 | `createEntityContextMiddleware` | Hono middleware injecting entity context, role, and permissions |
+| `createRequirePermissionMiddleware` | Gate a route on a specific permission (403 if missing) |
+| `createRequireRoleMiddleware` | Gate a route on a minimum role (403 if below) |
+| `createEntityHelpers` | Factory returning `{ entity, members, invitations, permissions, apiKeys? }` |
 
 ### Types
 
@@ -84,13 +99,18 @@ Re-exports from `@sudobility/types`: `Entity`, `EntityMember`, `EntityInvitation
 ## Development
 
 ```bash
-bun run build        # Build ESM-only
-bun run verify       # All checks + build (use before commit)
-bun test             # Run tests (vitest)
-bun run typecheck    # TypeScript check
+bun run build        # Build ESM-only (tsc + scripts/fix-esm-imports.mjs)
+bun run verify       # typecheck + lint + build (use before commit; no tests)
+bun run test:unit    # Run tests (Vitest) -- NOT `bun test`
+bun run test:watch   # Vitest in watch mode
+bun run typecheck    # TypeScript check (tsc --noEmit)
 bun run lint         # ESLint
+bun run format       # Prettier write
 bun run clean        # Remove dist/
 ```
+
+> Use `bun run test:unit`, not `bun test`: the suites import from `vitest`, so
+> Bun's built-in test runner will not run them correctly.
 
 ## License
 
